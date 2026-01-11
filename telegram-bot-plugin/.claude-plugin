@@ -1,0 +1,97 @@
+{
+  "name": "telegram-bot-control",
+  "version": "1.0.0",
+  "description": "Control Telegram Claude Code bot from within Claude Code CLI",
+  "author": "Claude Code Enhanced Security",
+  "tools": [
+    {
+      "name": "start_telegram_bot",
+      "description": "Start the Telegram bot. The bot will run in the background and handle incoming messages from Telegram.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "working_dir": {
+            "type": "string",
+            "description": "Optional working directory for the bot. Defaults to the current bot directory."
+          }
+        },
+        "required": []
+      },
+      "script": "node bot-manager.js start"
+    },
+    {
+      "name": "stop_telegram_bot",
+      "description": "Stop the running Telegram bot gracefully. All active sessions will be terminated.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "script": "node bot-manager.js stop"
+    },
+    {
+      "name": "telegram_bot_status",
+      "description": "Check the status of the Telegram bot. Returns whether it's running, number of active sessions, uptime, etc.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "script": "node bot-manager.js status"
+    },
+    {
+      "name": "restart_telegram_bot",
+      "description": "Restart the Telegram bot. Useful after configuration changes.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "script": "node bot-manager.js restart"
+    },
+    {
+      "name": "notify_telegram",
+      "description": "Send a notification message to your Telegram chat. Useful for alerting yourself about events, completion of long-running tasks, or important updates.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "The message to send to Telegram"
+          },
+          "chat_id": {
+            "type": "string",
+            "description": "Optional Telegram chat ID. If not provided, uses the authorized chat ID from .env"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["normal", "high", "urgent"],
+            "description": "Message priority level. Higher priorities may have different formatting."
+          }
+        },
+        "required": ["message"]
+      },
+      "script": "node bot-manager.js notify"
+    },
+    {
+      "name": "list_telegram_sessions",
+      "description": "List all active Telegram bot sessions with their details (session names, workspaces, message counts, etc.)",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "script": "node bot-manager.js sessions"
+    }
+  ],
+  "hooks": {
+    "on_start": "echo 'Telegram Bot Control plugin loaded. Use start_telegram_bot to start the bot.'",
+    "on_exit": "node bot-manager.js cleanup"
+  },
+  "config": {
+    "bot_script": "../index.js",
+    "env_file": "../.env",
+    "pid_file": ".telegram-bot.pid",
+    "log_file": "../logs/bot.log"
+  }
+}

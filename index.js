@@ -5,6 +5,13 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import { t, setLanguage, getLanguage, getSupportedLanguages, getDefaultLanguage } from './lib/i18n.js';
+
+// Security and session management modules
+import confirmations from './src/security/confirmations.js';
+import rateLimit from './src/security/rateLimit.js';
+import auditLog from './src/security/auditLog.js';
+import sessionManager from './src/session/SessionManager.js';
+
 dotenv.config();
 
 // ============================
@@ -107,8 +114,9 @@ function createClaudeSession(chatId) {
     '--output-format', 'stream-json',
     '--include-partial-messages',
     '--replay-user-messages',
-    '--session-id', sessionId,
-    '--dangerously-skip-permissions'
+    '--session-id', sessionId
+    // Removed --dangerously-skip-permissions for security
+    // Claude will now prompt for confirmations via confirmation handler
   ], {
     cwd: WORKING_DIR,
     shell: true,
@@ -389,6 +397,14 @@ async function handlePhotoMessage(chatId, photo) {
 // ============================
 
 async function handleVoiceMessage(chatId, voice) {
+  // Check rate limit for audio transcription
+  const limitCheck = rateLimit.checkRateLimit(chatId, 'audio');
+  if (limitCheck.limited) {
+    await rateLimit.sendRateLimitWarning(bot, chatId, limitCheck, 'audio');
+    auditLog.logRateLimitViolation(chatId, 'audio', limitCheck);
+    return;
+  }
+
   const session = sessions.get(chatId);
 
   if (!session || !session.active) {
@@ -397,6 +413,7 @@ async function handleVoiceMessage(chatId, voice) {
   }
 
   console.log(`🎤 [${chatId}] Processing audio...`);
+  auditLog.logUserAction(chatId, 'audio_transcription', { fileSize: voice.file_size });
   await bot.sendChatAction(chatId, 'typing');
 
   let tempFile = null;
@@ -692,10 +709,258 @@ bot.on('message', async (msg) => {
   }
 
   // ============================
+  // MULTI-SESSION COMMANDS
+  // ============================
+
+  // /session new <name> [path] - Create new session
+  if (text && text.startsWith('/session')) {
+    const args = text.split(' ');
+
+    if (args.length === 1) {
+      // Show current session and help
+      const currentName = sessionManager.getCurrentSessionName(chatId) || 'none';
+      const sessionCount = sessionManager.getSessionCount(chatId);
+
+      await bot.sendMessage(chatId,
+        `📋 **Multi-Session Management**\n\n` +
+        `**Current Session**: ${currentName}\n` +
+        `**Total Sessions**: ${sessionCount}\n\n` +
+        `**Commands**:\n` +
+        `• \`/session new <name> [path]\` - Create new session\n` +
+        `• \`/sessions\` - List all sessions\n` +
+        `• \`/switch <name>\` - Switch to session\n` +
+        `• \`/kill <name>\` - Terminate session\n` +
+        `• \`@<name> message\` - Send to specific session\n\n` +
+        `**Example**: \`/session new api /path/to/api\``,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    if (args[1] === 'new') {
+      if (args.length < 3) {
+        await bot.sendMessage(chatId, '❌ Usage: `/session new <name> [path]`', { parse_mode: 'Markdown' });
+        return;
+      }
+
+      const sessionName = args[2];
+      const workspacePath = args[3] || WORKING_DIR;
+
+      try {
+        // Check rate limit for session creation
+        const limitCheck = rateLimit.checkRateLimit(chatId, 'sessions');
+        if (limitCheck.limited) {
+          await rateLimit.sendRateLimitWarning(bot, chatId, limitCheck, 'sessions');
+          return;
+        }
+
+        const session = sessionManager.createSession(chatId, sessionName, workspacePath, {
+          claudeCodePath: CLAUDE_CODE_PATH
+        });
+
+        auditLog.logSessionCreated(chatId, session.sessionId, sessionName, workspacePath);
+
+        await bot.sendMessage(chatId,
+          `✅ **Session Created**\n\n` +
+          `**Name**: ${sessionName}\n` +
+          `**Session ID**: ${session.sessionId}\n` +
+          `**Workspace**: ${workspacePath}\n\n` +
+          `Use \`/switch ${sessionName}\` to switch to this session.`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (error) {
+        await bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+      }
+      return;
+    }
+  }
+
+  // /sessions - List all sessions
+  if (text === '/sessions') {
+    const userSessions = sessionManager.getAllSessions(chatId);
+    const currentName = sessionManager.getCurrentSessionName(chatId);
+
+    if (userSessions.length === 0) {
+      await bot.sendMessage(chatId,
+        `📋 **No Sessions**\n\n` +
+        `Use \`/session new <name>\` to create your first session.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    let message = `📋 **Your Sessions** (${userSessions.length})\n\n`;
+
+    for (const session of userSessions) {
+      const isCurrent = session.name === currentName;
+      const status = session.active ? '🟢' : '🔴';
+      const currentMarker = isCurrent ? ' ⭐️' : '';
+
+      message += `${status} **${session.name}**${currentMarker}\n`;
+      message += `   📁 ${session.workspacePath}\n`;
+      message += `   💬 Messages: ${session.messageCount}\n`;
+      message += `   🕐 Last: ${new Date(session.lastActivity).toLocaleString()}\n\n`;
+    }
+
+    message += `\nUse \`/switch <name>\` to change sessions`;
+
+    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    return;
+  }
+
+  // /switch <name> - Switch to different session
+  if (text && text.startsWith('/switch')) {
+    const args = text.split(' ');
+
+    if (args.length < 2) {
+      await bot.sendMessage(chatId, '❌ Usage: `/switch <session-name>`', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    const sessionName = args[1];
+
+    try {
+      const session = sessionManager.switchSession(chatId, sessionName);
+      auditLog.logUserAction(chatId, 'session_switch', { sessionName });
+
+      await bot.sendMessage(chatId,
+        `✅ **Switched to Session**\n\n` +
+        `**Name**: ${session.name}\n` +
+        `**Workspace**: ${session.workspacePath}\n` +
+        `**Messages**: ${session.messageCount}`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (error) {
+      await bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+    }
+    return;
+  }
+
+  // /kill <name> - Terminate a session
+  if (text && text.startsWith('/kill')) {
+    const args = text.split(' ');
+
+    if (args.length < 2) {
+      await bot.sendMessage(chatId, '❌ Usage: `/kill <session-name>`', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    const sessionName = args[1];
+
+    try {
+      sessionManager.killSession(chatId, sessionName);
+      auditLog.logSessionTerminated(chatId, null, sessionName, 'user_requested');
+
+      await bot.sendMessage(chatId, `✅ Session "${sessionName}" terminated.`);
+    } catch (error) {
+      await bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+    }
+    return;
+  }
+
+  // ============================
   // MENSAGEM NORMAL
   // ============================
   if (text && !text.startsWith('/')) {
+    // Check rate limit
+    const limitCheck = rateLimit.checkRateLimit(chatId, 'messages');
+    if (limitCheck.limited) {
+      await rateLimit.sendRateLimitWarning(bot, chatId, limitCheck, 'messages');
+      auditLog.logRateLimitViolation(chatId, 'messages', limitCheck);
+      return;
+    }
+
+    // Check for pending confirmation
+    if (confirmations.hasPendingConfirmation(chatId)) {
+      const pending = confirmations.getPendingConfirmation(chatId);
+
+      // Check if this is the confirmation phrase for high-security operations
+      if (pending && text === 'I CONFIRM THIS ACTION') {
+        auditLog.logDestructiveOperation(chatId, pending.command, true, { level: pending.level });
+        await bot.sendMessage(chatId, '✅ Confirmation received. Executing operation...');
+        sendToClaudeSession(chatId, pending.command);
+        return;
+      }
+
+      // If there's a pending confirmation but wrong response, remind user
+      await bot.sendMessage(chatId,
+        '⚠️ You have a pending operation confirmation. Please confirm or cancel it first.\n\n' +
+        'Reply with the exact phrase shown above, or send `/cancel` to cancel.'
+      );
+      return;
+    }
+
+    // Check if message contains destructive operations
+    const needsConfirmation = await confirmations.requireConfirmation(bot, chatId, text);
+    if (needsConfirmation) {
+      auditLog.logSecurityEvent(chatId, 'confirmation_requested', { message: text });
+      return; // Wait for user confirmation
+    }
+
+    // Log the action
+    auditLog.logUserAction(chatId, 'message_sent', { messageLength: text.length });
+
+    // Send to Claude session
     sendToClaudeSession(chatId, text);
+  }
+});
+
+// ============================
+// CALLBACK QUERY HANDLER (for inline buttons)
+// ============================
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+
+  // Handle confirmation buttons
+  if (data === 'confirm_yes') {
+    const pending = confirmations.getPendingConfirmation(chatId);
+
+    if (!pending) {
+      await bot.answerCallbackQuery(query.id, {
+        text: '⚠️ No pending confirmation found.',
+        show_alert: true
+      });
+      return;
+    }
+
+    auditLog.logDestructiveOperation(chatId, pending.command, true, { level: pending.level });
+
+    await bot.answerCallbackQuery(query.id, {
+      text: '✅ Confirmed. Executing...'
+    });
+
+    await bot.editMessageText(
+      '✅ **Confirmed**\n\nExecuting operation...',
+      {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown'
+      }
+    );
+
+    sendToClaudeSession(chatId, pending.command);
+  }
+
+  if (data === 'confirm_no') {
+    const pending = confirmations.getPendingConfirmation(chatId);
+
+    if (pending) {
+      auditLog.logDestructiveOperation(chatId, pending.command, false, { level: pending.level });
+    }
+
+    await bot.answerCallbackQuery(query.id, {
+      text: '❌ Cancelled'
+    });
+
+    await bot.editMessageText(
+      '❌ **Cancelled**\n\nOperation aborted by user.',
+      {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown'
+      }
+    );
   }
 });
 
