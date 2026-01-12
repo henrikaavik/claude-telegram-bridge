@@ -101,6 +101,56 @@ async function sendMessage(chatId, text, options = {}) {
   }
 }
 
+/**
+ * Escape Markdown special characters to prevent injection
+ * @param {string} text - Text to escape
+ * @returns {string} - Escaped text safe for Markdown
+ */
+function escapeMarkdown(text) {
+  if (!text || typeof text !== 'string') {
+    return '';
+  }
+
+  // Escape Markdown special characters
+  return text
+    .replace(/\\/g, '\\\\')   // Backslash first
+    .replace(/\*/g, '\\*')    // Asterisk (bold/italic)
+    .replace(/_/g, '\\_')     // Underscore (italic)
+    .replace(/\[/g, '\\[')    // Square brackets (links)
+    .replace(/\]/g, '\\]')
+    .replace(/\(/g, '\\(')    // Parentheses (links)
+    .replace(/\)/g, '\\)')
+    .replace(/~/g, '\\~')     // Tilde (strikethrough)
+    .replace(/`/g, '\\`')     // Backtick (code)
+    .replace(/>/g, '\\>')     // Greater than (quote)
+    .replace(/#/g, '\\#')     // Hash (header)
+    .replace(/\+/g, '\\+')    // Plus (list)
+    .replace(/-/g, '\\-')     // Hyphen (list)
+    .replace(/=/g, '\\=')     // Equal (header)
+    .replace(/\|/g, '\\|')    // Pipe (table)
+    .replace(/\{/g, '\\{')    // Curly braces
+    .replace(/\}/g, '\\}')
+    .replace(/\./g, '\\.')    // Period (list)
+    .replace(/!/g, '\\!');    // Exclamation (image)
+}
+
+/**
+ * Check if a user is an admin in a group chat
+ * @param {number} chatId - Chat ID
+ * @param {number} userId - User ID to check
+ * @returns {Promise<boolean>} - True if user is admin or creator
+ */
+async function isUserAdmin(chatId, userId) {
+  try {
+    const member = await bot.getChatMember(chatId, userId);
+    return member.status === 'creator' || member.status === 'administrator';
+  } catch (error) {
+    console.error(`Error checking admin status: ${error.message}`);
+    // If we can't check, return false (fail-safe)
+    return false;
+  }
+}
+
 // ============================
 // CRIAR SESSÃO STREAM JSON
 // ============================
@@ -468,10 +518,11 @@ async function handleVoiceMessage(chatId, voice) {
 
       console.log(`✅ [${chatId}] Transcription: "${transcription.substring(0, 100)}..."`);
 
-      // Enviar transcrição para o usuário
-      await bot.sendMessage(chatId, t(chatId, 'media.audioTranscribed', { transcription }), { parse_mode: 'Markdown' });
+      // Enviar transcrição para o usuário (escape Markdown to prevent injection)
+      const escapedTranscription = escapeMarkdown(transcription);
+      await bot.sendMessage(chatId, t(chatId, 'media.audioTranscribed', { transcription: escapedTranscription }), { parse_mode: 'Markdown' });
 
-      // Enviar transcrição para Claude
+      // Enviar transcrição para Claude (use original unescaped text)
       sendToClaudeSession(chatId, transcription);
 
       // Limpar arquivo imediatamente após transcrever
@@ -659,6 +710,18 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, t(chatId, 'session.stopped'));
     } else {
       await bot.sendMessage(chatId, t(chatId, 'session.noSession'));
+    }
+    return;
+  }
+
+  if (text === '/cancel') {
+    // Cancel pending confirmation
+    const hadConfirmation = confirmations.cancelPendingConfirmation(chatId);
+    if (hadConfirmation) {
+      auditLog.logSecurityEvent(chatId, 'confirmation_cancelled', {});
+      await bot.sendMessage(chatId, '✅ Pending confirmation cancelled.');
+    } else {
+      await bot.sendMessage(chatId, '❌ No pending confirmation to cancel.');
     }
     return;
   }
@@ -890,17 +953,38 @@ bot.on('message', async (msg) => {
 
     // Check for pending confirmation
     if (confirmations.hasPendingConfirmation(chatId)) {
-      const pending = confirmations.getPendingConfirmation(chatId);
+      const pending = confirmations.peekPendingConfirmation(chatId);
 
       // Check if this is the confirmation phrase for high-security operations
       if (pending && text === 'I CONFIRM THIS ACTION') {
+        // Check admin privileges in group chats if enabled
+        if (isGroup && process.env.GROUP_ADMIN_ONLY_CONFIRMATIONS === 'true') {
+          const isAdmin = await isUserAdmin(chatId, msg.from.id);
+          if (!isAdmin) {
+            await bot.sendMessage(chatId,
+              '🚫 **Permission Denied**\n\n' +
+              'Only group administrators can confirm this operation.\n\n' +
+              'Ask a group admin to confirm, or send `/cancel` to cancel.',
+              { parse_mode: 'Markdown' }
+            );
+            auditLog.logSecurityEvent(chatId, 'admin_check_failed', {
+              userId: msg.from.id,
+              username: msg.from.username,
+              command: pending.command
+            });
+            return;
+          }
+        }
+
+        // Clear the confirmation only after successful match and admin check
+        confirmations.getPendingConfirmation(chatId);
         auditLog.logDestructiveOperation(chatId, pending.command, true, { level: pending.level });
         await bot.sendMessage(chatId, '✅ Confirmation received. Executing operation...');
         sendToClaudeSession(chatId, pending.command);
         return;
       }
 
-      // If there's a pending confirmation but wrong response, remind user
+      // If there's a pending confirmation but wrong response, remind user (don't clear it)
       await bot.sendMessage(chatId,
         '⚠️ You have a pending operation confirmation. Please confirm or cancel it first.\n\n' +
         'Reply with the exact phrase shown above, or send `/cancel` to cancel.'
@@ -940,6 +1024,25 @@ bot.on('callback_query', async (query) => {
 
   // Handle confirmation buttons
   if (data === 'confirm_yes') {
+    const chatType = query.message.chat.type;
+    const isGroup = chatType === 'group' || chatType === 'supergroup';
+
+    // Check admin privileges in group chats if enabled
+    if (isGroup && process.env.GROUP_ADMIN_ONLY_CONFIRMATIONS === 'true') {
+      const isAdmin = await isUserAdmin(chatId, query.from.id);
+      if (!isAdmin) {
+        await bot.answerCallbackQuery(query.id, {
+          text: '🚫 Only group administrators can confirm this operation.',
+          show_alert: true
+        });
+        auditLog.logSecurityEvent(chatId, 'admin_check_failed_button', {
+          userId: query.from.id,
+          username: query.from.username
+        });
+        return;
+      }
+    }
+
     const pending = confirmations.getPendingConfirmation(chatId);
 
     if (!pending) {

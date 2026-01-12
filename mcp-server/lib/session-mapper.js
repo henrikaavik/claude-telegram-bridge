@@ -1,9 +1,15 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 
 /**
  * Session Mapper - Maps Claude session IDs to Telegram chat IDs
  */
+
+// Get script directory for resolving relative paths
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 let config = null;
 let configPath = null;
@@ -13,7 +19,8 @@ let configPath = null;
  * @param {string} customPath - Optional custom config file path
  */
 export async function initialize(customPath = null) {
-  configPath = customPath || process.env.MCP_CONFIG_FILE || './config/mcp-config.json';
+  // Use absolute path for config file
+  configPath = customPath || process.env.MCP_CONFIG_FILE || path.join(__dirname, '../config/mcp-config.json');
 
   try {
     const configData = await fs.readFile(configPath, 'utf-8');

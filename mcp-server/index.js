@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 
-import 'dotenv/config';
+import { config } from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { MCPHandler } from './lib/mcp-handler.js';
 import * as tools from './lib/tools.js';
 import * as sessionMapper from './lib/session-mapper.js';
 import * as queueManager from './lib/queue-manager.js';
+
+// Load .env from script directory (not from process.cwd())
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+config({ path: join(__dirname, '.env') });
 
 /**
  * MCP Telegram Notify Server

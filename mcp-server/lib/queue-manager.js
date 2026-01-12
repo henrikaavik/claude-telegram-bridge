@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 import chokidar from 'chokidar';
 import { v4 as uuidv4 } from 'uuid';
 import { signMessage, verifyMessage } from './security.js';
@@ -7,6 +9,10 @@ import { signMessage, verifyMessage } from './security.js';
 /**
  * Queue Manager - Handles message queue operations
  */
+
+// Get script directory for resolving relative paths
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 let queueDir = null;
 let watcher = null;
@@ -17,7 +23,8 @@ let pendingRequests = new Map(); // correlationId -> { resolve, reject, timer }
  * @param {string} customQueueDir - Optional custom queue directory
  */
 export async function initialize(customQueueDir = null) {
-  queueDir = customQueueDir || process.env.TELEGRAM_QUEUE_DIR || './queue';
+  // Use absolute path for queue directory
+  queueDir = customQueueDir || process.env.TELEGRAM_QUEUE_DIR || path.join(__dirname, '../queue');
 
   // Ensure directories exist
   await fs.mkdir(path.join(queueDir, 'outbound'), { recursive: true });
