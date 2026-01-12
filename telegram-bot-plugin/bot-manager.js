@@ -226,9 +226,18 @@ async function sendNotification(message, chatId = null, priority = 'normal') {
     return;
   }
 
-  const targetChatId = chatId || AUTHORIZED_CHAT_ID;
+  // Support both single chat ID and comma-separated list
+  let targetChatIds = [];
+  if (chatId) {
+    targetChatIds = [chatId];
+  } else if (AUTHORIZED_CHAT_ID) {
+    // Parse comma-separated chat IDs
+    targetChatIds = AUTHORIZED_CHAT_ID.split(',')
+      .map(id => id.trim())
+      .filter(id => id.length > 0);
+  }
 
-  if (!targetChatId) {
+  if (targetChatIds.length === 0) {
     console.error('❌ No chat ID provided and AUTHORIZED_CHAT_ID not configured');
     return;
   }
@@ -245,29 +254,44 @@ async function sendNotification(message, chatId = null, priority = 'normal') {
 
   formattedMessage += `\n\n_Sent from Claude Code at ${new Date().toLocaleString()}_`;
 
-  try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: targetChatId,
-          text: formattedMessage,
-          parse_mode: 'Markdown'
-        })
+  // Send to all target chat IDs
+  const results = await Promise.allSettled(
+    targetChatIds.map(async (targetChatId) => {
+      try {
+        const response = await fetch(
+          `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: targetChatId,
+              text: formattedMessage,
+              parse_mode: 'Markdown'
+            })
+          }
+        );
+
+        const result = await response.json();
+
+        if (result.ok) {
+          console.log(`✅ Notification sent successfully to ${targetChatId}`);
+          return { success: true, chatId: targetChatId };
+        } else {
+          console.error(`❌ Failed to send notification to ${targetChatId}:`, result.description);
+          return { success: false, chatId: targetChatId, error: result.description };
+        }
+      } catch (error) {
+        console.error(`❌ Error sending notification to ${targetChatId}:`, error.message);
+        return { success: false, chatId: targetChatId, error: error.message };
       }
-    );
+    })
+  );
 
-    const result = await response.json();
-
-    if (result.ok) {
-      console.log('✅ Notification sent successfully');
-    } else {
-      console.error('❌ Failed to send notification:', result.description);
-    }
-  } catch (error) {
-    console.error('❌ Error sending notification:', error.message);
+  // Log summary
+  const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+  const failed = results.length - successful;
+  if (failed > 0) {
+    console.log(`📊 Notification summary: ${successful} sent, ${failed} failed`);
   }
 }
 

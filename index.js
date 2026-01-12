@@ -22,6 +22,9 @@ const WORKING_DIR = process.env.WORKING_DIR || process.cwd();
 const AUTHORIZED_CHAT_IDS = process.env.AUTHORIZED_CHAT_ID
   ? process.env.AUTHORIZED_CHAT_ID.split(',').map(id => id.trim())
   : [];
+const AUTHORIZED_USER_IDS = process.env.AUTHORIZED_USER_IDS
+  ? process.env.AUTHORIZED_USER_IDS.split(',').map(id => id.trim())
+  : [];
 const CLAUDE_CODE_PATH = process.env.CLAUDE_CODE_PATH || 'claude';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -54,6 +57,16 @@ function generateUUID() {
     const v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
+}
+
+/**
+ * Escape markdown special characters to prevent injection
+ * @param {string} text - Text to escape
+ * @returns {string} - Escaped text safe for markdown
+ */
+function escapeMarkdown(text) {
+  if (!text) return '';
+  return text.replace(/([*_`\[\]()~>#+=|{}.!-])/g, '\\$1');
 }
 
 function splitMessage(text, maxLength = 4000) {
@@ -303,12 +316,14 @@ async function flushPartialMessage(chatId) {
   const pending = pendingMessages.get(chatId);
   if (!pending || !pending.content || pending.content === pending.lastSent) return;
 
-  // Enviar apenas o que é novo (diff)
-  const newContent = pending.content.substring(pending.lastSent.length);
+  // Capture content snapshot to prevent race condition where content mutates during async send
+  const contentSnapshot = pending.content;
+  const newContent = contentSnapshot.substring(pending.lastSent.length);
 
   if (newContent.trim()) {
     await sendMessage(chatId, `🤖 ${newContent}`);
-    pending.lastSent = pending.content;
+    // Use the snapshot, not the current pending.content which may have changed
+    pending.lastSent = contentSnapshot;
   }
 
   if (pending.timeout) {
@@ -459,8 +474,8 @@ async function handleVoiceMessage(chatId, voice) {
 
       console.log(`✅ [${chatId}] Transcription: "${transcription.substring(0, 100)}..."`);
 
-      // Enviar transcrição para o usuário
-      await bot.sendMessage(chatId, t(chatId, 'media.audioTranscribed', { transcription }), { parse_mode: 'Markdown' });
+      // Enviar transcrição para o usuário (escape markdown to prevent injection)
+      await bot.sendMessage(chatId, t(chatId, 'media.audioTranscribed', { transcription: escapeMarkdown(transcription) }), { parse_mode: 'Markdown' });
 
       // Enviar transcrição para Claude
       sendToClaudeSession(chatId, transcription);
@@ -504,7 +519,8 @@ async function handleVoiceMessage(chatId, voice) {
 // ============================
 
 function sendToClaudeSession(chatId, message) {
-  const session = sessions.get(chatId);
+  // Use SessionManager to get the current active session for this chat
+  const session = sessionManager.getCurrentSession(chatId) || sessions.get(chatId);
 
   if (!session || !session.active) {
     bot.sendMessage(chatId, t(chatId, 'errors.noSession'));
@@ -576,16 +592,41 @@ bot.on('message', async (msg) => {
   }
 
   // Verificar autorização
-  if (AUTHORIZED_CHAT_IDS.length > 0 && !AUTHORIZED_CHAT_IDS.includes(chatId.toString())) {
-    await bot.sendMessage(chatId, t(chatId, 'errors.unauthorized'));
-    console.log(`⚠️ Access denied: ${chatId} (${chatType})`);
-    return;
+  // For group chats: check both chat ID and user ID for security
+  // For private chats: check chat ID (which equals user ID)
+  const userId = msg.from?.id;
+  const hasAuthConfig = AUTHORIZED_CHAT_IDS.length > 0 || AUTHORIZED_USER_IDS.length > 0;
+
+  if (hasAuthConfig) {
+    let authorized = false;
+
+    // Check chat ID authorization (works for both private and group chats)
+    if (AUTHORIZED_CHAT_IDS.includes(chatId.toString())) {
+      // In group chats, also verify the user is authorized if AUTHORIZED_USER_IDS is configured
+      if (isGroup && AUTHORIZED_USER_IDS.length > 0) {
+        authorized = AUTHORIZED_USER_IDS.includes(userId?.toString());
+      } else {
+        authorized = true;
+      }
+    }
+
+    // Check user ID authorization (more secure for group chats)
+    if (!authorized && AUTHORIZED_USER_IDS.length > 0 && userId) {
+      authorized = AUTHORIZED_USER_IDS.includes(userId.toString());
+    }
+
+    if (!authorized) {
+      await bot.sendMessage(chatId, t(chatId, 'errors.unauthorized'));
+      console.log(`⚠️ Access denied: Chat ${chatId}, User ${userId} (${chatType})`);
+      return;
+    }
   }
 
   // Log do chat ID (útil para descobrir IDs de grupos)
-  if (AUTHORIZED_CHAT_IDS.length === 0) {
+  if (!hasAuthConfig) {
     const chatName = msg.chat.title || msg.chat.username || msg.chat.first_name || 'Unknown';
-    console.log(`📱 Chat ID: ${chatId} | Type: ${chatType} | Name: ${chatName} (configure in .env)`);
+    const userName = msg.from?.username || msg.from?.first_name || 'Unknown';
+    console.log(`📱 Chat ID: ${chatId} | User ID: ${userId} | Type: ${chatType} | Chat: ${chatName} | User: ${userName} (configure in .env)`);
   }
 
   // ============================
@@ -650,6 +691,20 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, t(chatId, 'session.stopped'));
     } else {
       await bot.sendMessage(chatId, t(chatId, 'session.noSession'));
+    }
+    return;
+  }
+
+  if (text === '/cancel') {
+    if (confirmations.hasPendingConfirmation(chatId)) {
+      const pending = confirmations.getPendingConfirmation(chatId);
+      auditLog.logDestructiveOperation(chatId, pending.command, false, {
+        level: pending.level,
+        reason: 'user_cancelled'
+      });
+      await bot.sendMessage(chatId, '❌ Operation cancelled.');
+    } else {
+      await bot.sendMessage(chatId, '⚠️ No pending operation to cancel.');
     }
     return;
   }
@@ -872,10 +927,11 @@ bot.on('message', async (msg) => {
 
     // Check for pending confirmation
     if (confirmations.hasPendingConfirmation(chatId)) {
-      const pending = confirmations.getPendingConfirmation(chatId);
+      const pending = confirmations.peekPendingConfirmation(chatId);
 
       // Check if this is the confirmation phrase for high-security operations
       if (pending && text === 'I CONFIRM THIS ACTION') {
+        confirmations.getPendingConfirmation(chatId); // Clear it now
         auditLog.logDestructiveOperation(chatId, pending.command, true, { level: pending.level });
         await bot.sendMessage(chatId, '✅ Confirmation received. Executing operation...');
         sendToClaudeSession(chatId, pending.command);
@@ -993,10 +1049,17 @@ console.log('║      Real-Time JSON Streaming             ║');
 console.log('╚════════════════════════════════════════════╝');
 console.log(`📁 Directory: ${WORKING_DIR}`);
 console.log(`🤖 Claude CLI: ${CLAUDE_CODE_PATH}`);
-if (AUTHORIZED_CHAT_IDS.length > 0) {
-  console.log(`🔐 Authorization: Enabled (${AUTHORIZED_CHAT_IDS.length} authorized chat(s))`);
-  AUTHORIZED_CHAT_IDS.forEach(id => console.log(`   ├─ Chat ID: ${id}`));
+if (AUTHORIZED_CHAT_IDS.length > 0 || AUTHORIZED_USER_IDS.length > 0) {
+  console.log(`🔐 Authorization: Enabled`);
+  if (AUTHORIZED_CHAT_IDS.length > 0) {
+    console.log(`   ├─ Authorized Chats: ${AUTHORIZED_CHAT_IDS.length}`);
+    AUTHORIZED_CHAT_IDS.forEach(id => console.log(`   │  └─ ${id}`));
+  }
+  if (AUTHORIZED_USER_IDS.length > 0) {
+    console.log(`   └─ Authorized Users: ${AUTHORIZED_USER_IDS.length}`);
+    AUTHORIZED_USER_IDS.forEach(id => console.log(`      └─ ${id}`));
+  }
 } else {
-  console.log(`🔐 Authorization: Disabled (any chat can use)`);
+  console.log(`🔐 Authorization: Disabled (any chat/user can use)`);
 }
 console.log('✅ Bot started - Waiting for commands...\n');

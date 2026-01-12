@@ -126,11 +126,44 @@ export class MCPHandler {
     }
 
     try {
-      // Extract context from args if available
-      const context = {
-        sessionId: args._sessionId || 'unknown',
-        workingDir: args._workingDir || null
-      };
+      // Extract context from args - NOTE: These are caller-controlled and should not be
+      // trusted for security decisions. Use EXPECTED_SESSION_ID / EXPECTED_WORKING_DIR
+      // environment variables if you need to restrict access.
+      let sessionId = args._sessionId || 'unknown';
+      let workingDir = args._workingDir || null;
+
+      // Validate against expected values if configured (security measure)
+      // This prevents callers from spoofing session context to bypass allowlists
+      const expectedSessionId = process.env.EXPECTED_SESSION_ID;
+      const expectedWorkingDir = process.env.EXPECTED_WORKING_DIR;
+
+      if (expectedSessionId && sessionId !== expectedSessionId) {
+        return this.createErrorResponse(
+          id,
+          -32603,
+          'Authorization failed',
+          `Session ID mismatch: expected '${expectedSessionId}' but got '${sessionId}'`
+        );
+      }
+
+      if (expectedWorkingDir && workingDir !== expectedWorkingDir) {
+        return this.createErrorResponse(
+          id,
+          -32603,
+          'Authorization failed',
+          `Working directory mismatch: expected '${expectedWorkingDir}' but got '${workingDir}'`
+        );
+      }
+
+      // Override with expected values if configured (trusted source)
+      if (expectedSessionId) {
+        sessionId = expectedSessionId;
+      }
+      if (expectedWorkingDir) {
+        workingDir = expectedWorkingDir;
+      }
+
+      const context = { sessionId, workingDir };
 
       // Remove internal context fields from args
       const { _sessionId, _workingDir, ...toolArgs } = args;

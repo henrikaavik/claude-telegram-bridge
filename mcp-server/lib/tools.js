@@ -382,9 +382,17 @@ export async function telegramGetSessionStatus(params, context = {}) {
     const pendingMessages = await queueManager.getPendingMessageCount();
     const pendingRequests = queueManager.getPendingRequestCount();
 
-    // Check if bot is running by looking for recent activity
-    // (This is a simple check - bot could implement heartbeat for better detection)
-    const botRunning = true; // Assume running if queue directory exists
+    // Check if bot is likely running by verifying queue accessibility
+    // Note: This is a heuristic check. For accurate status, implement a heartbeat mechanism.
+    let botRunning = false;
+    try {
+      // If we can get pending counts without error, the queue is accessible
+      // A healthy bot should keep pending messages low
+      botRunning = pendingMessages < 50; // Arbitrary threshold - healthy bot processes messages quickly
+    } catch (error) {
+      // If we can't check, assume not running
+      botRunning = false;
+    }
 
     return {
       available: !security.isDisabled(),
@@ -397,6 +405,7 @@ export async function telegramGetSessionStatus(params, context = {}) {
   } catch (error) {
     return {
       available: false,
+      botRunning: false,
       error: error.message
     };
   }

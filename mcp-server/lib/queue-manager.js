@@ -166,8 +166,19 @@ export async function sendAndWaitForResponse(message, timeoutMs = 300000) {
     pendingRequests.set(correlationId, { resolve, reject, timer });
   });
 
-  // Send message
-  await sendMessage(messageWithCorrelation);
+  // Send message with error handling to prevent pending request leaks
+  try {
+    await sendMessage(messageWithCorrelation);
+  } catch (error) {
+    // Clean up pending request on send failure
+    const pending = pendingRequests.get(correlationId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      pendingRequests.delete(correlationId);
+      pending.reject(error);
+    }
+    throw error;
+  }
 
   // Wait for response
   return responsePromise;

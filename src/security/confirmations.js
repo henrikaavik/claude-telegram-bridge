@@ -4,13 +4,27 @@
  */
 
 // ============================================
+// UTILITY FUNCTIONS
+// ============================================
+
+/**
+ * Escape markdown special characters to prevent injection
+ * @param {string} text - Text to escape
+ * @returns {string} - Escaped text safe for markdown
+ */
+function escapeMarkdown(text) {
+  if (!text) return '';
+  return text.replace(/([*_`\[\]()~>#+=|{}.!-])/g, '\\$1');
+}
+
+// ============================================
 // DESTRUCTIVE OPERATION PATTERNS
 // ============================================
 
 const DESTRUCTIVE_PATTERNS = [
-  // Git operations
+  // Git operations (more specific patterns first to avoid false matches)
+  { pattern: /git\s+push\s+(-f|--force(-with-lease)?)/i, level: 'high', description: 'Force push to remote' },
   { pattern: /git\s+push/i, level: 'medium', description: 'Git push to remote' },
-  { pattern: /git\s+push\s+--force/i, level: 'high', description: 'Force push to remote' },
   { pattern: /git\s+reset\s+--hard/i, level: 'high', description: 'Hard reset git repository' },
   { pattern: /git\s+clean\s+-[dfx]/i, level: 'medium', description: 'Clean untracked files' },
 
@@ -86,7 +100,8 @@ export function generateConfirmationMessage(detection, command) {
   };
 
   let message = `${emoji[level]} **${levelText[level]}**\n\n`;
-  message += `Claude wants to execute:\n\`\`\`\n${command}\n\`\`\`\n\n`;
+  // Escape command to prevent markdown injection
+  message += `Claude wants to execute:\n\`\`\`\n${escapeMarkdown(command)}\n\`\`\`\n\n`;
   message += `**Operation**: ${description}\n`;
   message += `**Risk Level**: ${level.toUpperCase()}\n\n`;
 
@@ -145,6 +160,15 @@ export function storePendingConfirmation(chatId, command, level) {
       }
     }
   }, 5 * 60 * 1000);
+}
+
+/**
+ * Get a pending confirmation without clearing it
+ * @param {number} chatId - Telegram chat ID
+ * @returns {Object|null} - Pending confirmation or null
+ */
+export function peekPendingConfirmation(chatId) {
+  return pendingConfirmations.get(chatId) || null;
 }
 
 /**
@@ -227,6 +251,7 @@ export default {
   requireConfirmation,
   storePendingConfirmation,
   getPendingConfirmation,
+  peekPendingConfirmation,
   hasPendingConfirmation,
   cancelPendingConfirmation
 };

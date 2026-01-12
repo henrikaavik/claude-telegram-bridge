@@ -365,9 +365,23 @@ export class SessionManager {
         this.currentSessions = new Map(data.currentSessions);
       }
 
-      // Note: We don't restore the actual Claude Code processes on load
-      // They need to be recreated when the user sends a new message
-      // We just load the metadata
+      // Restore session metadata (processes need to be recreated manually)
+      if (data.sessions && Array.isArray(data.sessions)) {
+        for (const sessionData of data.sessions) {
+          this.sessions.set(sessionData.key, {
+            name: sessionData.name,
+            sessionId: sessionData.sessionId,
+            chatId: sessionData.chatId,
+            workspacePath: sessionData.workspacePath,
+            createdAt: sessionData.createdAt,
+            lastActivity: sessionData.lastActivity,
+            messageCount: sessionData.messageCount,
+            active: false, // Processes need to be recreated
+            process: null,
+            buffer: ''
+          });
+        }
+      }
     } catch (error) {
       console.error('Error loading sessions:', error);
     }
