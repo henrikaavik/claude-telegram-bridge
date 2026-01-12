@@ -1,0 +1,29 @@
+{
+  "name": "mcp-telegram-notify",
+  "version": "1.0.0",
+  "description": "MCP server that allows Claude Code to send messages and ask questions via Telegram",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "mcp",
+    "telegram",
+    "claude",
+    "notification",
+    "model-context-protocol"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "chokidar": "^3.5.3",
+    "uuid": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
