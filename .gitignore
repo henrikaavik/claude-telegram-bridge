@@ -31,3 +31,21 @@ Thumbs.db
 
 # Artifact
 /nul
+
+# Local configurations
+.claude/settings.local.json
+.mcp.json
+config/
+
+# Test scripts (contain secrets/personal data)
+test-*.js
+
+# Queue files
+mcp-server/queue/*.json
+
+# Development notes
+CODE_REVIEW_FINDINGS.md
+MCP_SERVER_CODE_REVIEW.md
+PROGRESS_REPORT.md
+QUICK_SUMMARY.md
+TEST-RESULTS.md

@@ -1,0 +1,27 @@
+{
+  "name": "telegram-claude-bridge-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for Claude Code integration with MCP support",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "telegram",
+    "claude",
+    "ai",
+    "mcp",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "node-telegram-bot-api": "^0.66.0",
+    "openai": "^6.8.1",
+    "chokidar": "^3.5.3",
+    "uuid": "^9.0.0"
+  }
+}
